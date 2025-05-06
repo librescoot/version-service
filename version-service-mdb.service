@@ -1,0 +1,11 @@
+[Unit]
+Description=LibreScoot MDB Version Service
+After=redis.service network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/version-service -hash="version:mdb"
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
