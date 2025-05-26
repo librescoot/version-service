@@ -58,6 +58,18 @@ func main() {
 		log.Printf("Successfully stored serial number in Redis hash '%s'", *hashName)
 	}
 
+	// Read and store real serial number if available
+	serialNumberReal, err := readSerialNumberReal()
+	if err != nil {
+		log.Printf("Warning: Failed to read real serial number: %v", err)
+	} else if serialNumberReal != "" {
+		err = rdb.HSet(ctx, *hashName, "serial_number_real", serialNumberReal).Err()
+		if err != nil {
+			log.Fatalf("Failed to set real serial number in Redis: %v", err)
+		}
+		log.Printf("Successfully stored real serial number in Redis hash '%s'", *hashName)
+	}
+
 	log.Printf("Successfully stored OS release information in Redis hash '%s'", *hashName)
 }
 
@@ -79,6 +91,40 @@ func readSerialNumber() (string, error) {
 	// Combine the values
 	sn := cfg0 + cfg1
 	return fmt.Sprintf("%d", sn), nil
+}
+
+// readRawStringFromFileAndTrimPrefix reads a raw string from a file, trims whitespace, and "0x" prefix.
+func readRawStringFromFileAndTrimPrefix(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot open %s: %v", path, err)
+	}
+	content := strings.TrimSpace(string(data))
+	// Ensure we only trim "0x" if it's a prefix, and the string is long enough
+	if len(content) >= 2 && content[:2] == "0x" {
+		content = content[2:]
+	}
+	return content, nil
+}
+
+// readSerialNumberReal reads the component serial number as a concatenated string.
+// It constructs the chip serial number the _correct_ way
+func readSerialNumberReal() (string, error) {
+	// Read the higher part of the UID (from CFG1)
+	uidH, err := readRawStringFromFileAndTrimPrefix("/sys/fsl_otp/HW_OCOTP_CFG1")
+	if err != nil {
+		return "", fmt.Errorf("failed to read serial number real part H: %v", err)
+	}
+
+	// Read the lower part of the UID (from CFG0)
+	uidL, err := readRawStringFromFileAndTrimPrefix("/sys/fsl_otp/HW_OCOTP_CFG0")
+	if err != nil {
+		return "", fmt.Errorf("failed to read serial number real part L: %v", err)
+	}
+
+	// Combine the values as strings
+	serialNumberReal := uidH + uidL
+	return serialNumberReal, nil
 }
 
 // readHexValueFromFile reads a hexadecimal value from a file
