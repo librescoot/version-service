@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -76,16 +77,22 @@ func main() {
 // readSerialNumber reads the component serial number based on the hash name
 // It attempts to read the serial number from the system files
 func readSerialNumber() (string, error) {
-	// Read the first value
-	cfg0, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG0")
+	cfg0Str, err := getRawOTPValue("/sys/fsl_otp/HW_OCOTP_CFG0", 4)
 	if err != nil {
-		return "", fmt.Errorf("failed to read serial number part 1: %v", err)
+		return "", fmt.Errorf("failed to get raw OTP value for CFG0: %v", err)
+	}
+	cfg1Str, err := getRawOTPValue("/sys/fsl_otp/HW_OCOTP_CFG1", 8)
+	if err != nil {
+		return "", fmt.Errorf("failed to get raw OTP value for CFG1: %v", err)
 	}
 
-	// Read the second value
-	cfg1, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG1")
+	cfg0, err := parseHexFromString(cfg0Str)
 	if err != nil {
-		return "", fmt.Errorf("failed to read serial number part 2: %v", err)
+		return "", fmt.Errorf("failed to parse serial number part 1 (CFG0 from '%s'): %v", cfg0Str, err)
+	}
+	cfg1, err := parseHexFromString(cfg1Str)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse serial number part 2 (CFG1 from '%s'): %v", cfg1Str, err)
 	}
 
 	// Combine the values
@@ -93,56 +100,86 @@ func readSerialNumber() (string, error) {
 	return fmt.Sprintf("%d", sn), nil
 }
 
-// readRawStringFromFileAndTrimPrefix reads a raw string from a file, trims whitespace, and "0x" prefix.
-func readRawStringFromFileAndTrimPrefix(path string) (string, error) {
-	data, err := os.ReadFile(path)
+// readHexValueFromNvmem reads a 4-byte hex value from NVMEM at a given offset.
+// It returns an 8-character hex string.
+func readHexValueFromNvmem(offset int) (string, error) {
+	nvmemDevicePath := "/sys/bus/nvmem/devices/imx-ocotp0/nvmem"
+
+	file, err := os.Open(nvmemDevicePath)
 	if err != nil {
-		return "", fmt.Errorf("cannot open %s: %v", path, err)
+		return "", fmt.Errorf("failed to open NVMEM device %s: %v", nvmemDevicePath, err)
 	}
-	content := strings.TrimSpace(string(data))
-	// Ensure we only trim "0x" if it's a prefix, and the string is long enough
-	if len(content) >= 2 && content[:2] == "0x" {
-		content = content[2:]
+	defer file.Close()
+
+	_, err = file.Seek(int64(offset), 0) // 0 means relative to the start of the file
+	if err != nil {
+		return "", fmt.Errorf("failed to seek in NVMEM device %s to offset %d: %v", nvmemDevicePath, offset, err)
 	}
-	return content, nil
+
+	buffer := make([]byte, 4)
+	n, err := file.Read(buffer)
+	if err != nil {
+		return "", fmt.Errorf("failed to read from NVMEM device %s at offset %d: %v", nvmemDevicePath, offset, err)
+	}
+	if n != 4 {
+		return "", fmt.Errorf("unexpected number of bytes read from NVMEM device %s at offset %d: got %d, expected 4", nvmemDevicePath, offset, n)
+	}
+
+	// Format the 4 bytes read from NVMEM into an 8-character hexadecimal string.
+	hexStr := fmt.Sprintf("%02x%02x%02x%02x", buffer[0], buffer[1], buffer[2], buffer[3])
+
+	if len(hexStr) != 8 {
+		return "", fmt.Errorf("internal error: formatted hex string length is not 8: got '%s'", hexStr)
+	}
+	return hexStr, nil
+}
+
+// getRawOTPValue attempts to read a raw hex string from a sysfs file,
+// falling back to NVMEM if the file doesn't exist or is unreadable.
+// It returns the hex string without "0x" prefix (e.g., "00112233").
+func getRawOTPValue(filePath string, nvmemOffset int) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err == nil {
+		content := strings.TrimSpace(string(data))
+		if strings.HasPrefix(strings.ToLower(content), "0x") {
+			return content[2:], nil
+		}
+		return content, nil
+	}
+
+	log.Printf("Warning: Failed to read from %s (%v), attempting fallback to NVMEM for offset %d", filePath, err, nvmemOffset)
+	nvmemValue, nvmemErr := readHexValueFromNvmem(nvmemOffset)
+	if nvmemErr != nil {
+		return "", fmt.Errorf("failed to read from %s (err: %v) and NVMEM fallback also failed for offset %d (err: %v)", filePath, err, nvmemOffset, nvmemErr)
+	}
+	return nvmemValue, nil
+}
+
+// parseHexFromString parses a hexadecimal string (expected without "0x" prefix) into a uint64.
+func parseHexFromString(hexStr string) (uint64, error) {
+	value, err := strconv.ParseUint(hexStr, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse hex string '%s': %v", hexStr, err)
+	}
+	return value, nil
 }
 
 // readSerialNumberReal reads the component serial number as a concatenated string.
-// It constructs the chip serial number the _correct_ way
+// It constructs the chip serial number the "real" (correct) way, falling back to NVMEM.
 func readSerialNumberReal() (string, error) {
-	// Read the higher part of the UID (from CFG1)
-	uidH, err := readRawStringFromFileAndTrimPrefix("/sys/fsl_otp/HW_OCOTP_CFG1")
+	uidHStr, err := getRawOTPValue("/sys/fsl_otp/HW_OCOTP_CFG1", 8)
 	if err != nil {
-		return "", fmt.Errorf("failed to read serial number real part H: %v", err)
+		return "", fmt.Errorf("failed to get raw OTP value for real serial number part H (CFG1): %v", err)
 	}
 
-	// Read the lower part of the UID (from CFG0)
-	uidL, err := readRawStringFromFileAndTrimPrefix("/sys/fsl_otp/HW_OCOTP_CFG0")
+	uidLStr, err := getRawOTPValue("/sys/fsl_otp/HW_OCOTP_CFG0", 4)
 	if err != nil {
-		return "", fmt.Errorf("failed to read serial number real part L: %v", err)
+		return "", fmt.Errorf("failed to get raw OTP value for real serial number part L (CFG0): %v", err)
 	}
 
 	// Combine the values as strings
-	serialNumberReal := uidH + uidL
+	serialNumberReal := uidHStr + uidLStr
 	return serialNumberReal, nil
-}
-
-// readHexValueFromFile reads a hexadecimal value from a file
-func readHexValueFromFile(path string) (uint64, error) {
-	// Read the file
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("cannot open %s: %v", path, err)
-	}
-
-	// Parse the hexadecimal value
-	var value uint64
-	_, err = fmt.Sscanf(string(data), "%x", &value)
-	if err != nil {
-		return 0, fmt.Errorf("cannot read value from %s: %v", path, err)
-	}
-
-	return value, nil
 }
 
 // readOSRelease reads the /etc/os-release file and returns a map of lowercase keys to values
