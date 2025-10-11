@@ -1,5 +1,6 @@
 [Unit]
 Description=LibreScoot MDB Version Service
+Requires=redis.service
 After=redis.service network.target
 
 [Service]
