@@ -1,7 +1,6 @@
 [Unit]
 Description=LibreScoot DBC Version Service
-Requires=redis.service
-After=redis.service
+After=network.target
 
 [Service]
 Type=oneshot
