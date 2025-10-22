@@ -6,6 +6,8 @@ After=network.target
 Type=oneshot
 ExecStart=/usr/bin/version-service -hash="version:dbc"
 RemainAfterExit=no
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
