@@ -13,6 +13,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+var version = "dev"
+
 // getIdentifierHexStrings attempts to read raw hex strings for CFG0 and CFG1.
 // It prioritizes NVMEM, then falls back to OTP sysfs files.
 // Returns the hex strings (which may be empty if a part is unreadable) and an error if any part could not be read from any source.
@@ -100,6 +102,8 @@ func main() {
 	redisAddr := flag.String("redis", "192.168.7.1:6379", "Redis server address")
 	hashName := flag.String("hash", "os-release", "Redis hash name to store the values")
 	flag.Parse()
+
+	log.Printf("librescoot-version %s starting", version)
 
 	// Read /etc/os-release file
 	osReleaseData, err := readOSRelease()
