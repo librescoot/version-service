@@ -1,23 +1,24 @@
-BINARY_NAME=version-service
-GOOS=linux
-VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+BINARY_NAME := version-service
+BUILD_DIR := bin
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -ldflags "-w -s -X main.version=$(VERSION)"
 
-.PHONY: build build-host build-amd64 build-arm dist clean lint test fmt deps
+.PHONY: build build-host build-arm dist clean lint test fmt deps
 
 build:
-	CGO_ENABLED=0 go build -ldflags "-w -s -X main.version=$(VERSION)" -o $(BINARY_NAME) ./cmd/version-service
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/version-service
+
+build-arm: build
 
 build-host:
-	CGO_ENABLED=0 go build -ldflags "-w -s -X main.version=$(VERSION)" -o $(BINARY_NAME) ./cmd/version-service
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/version-service
 
-build-amd64:
-	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=amd64 go build -ldflags "-w -s -X main.version=$(VERSION)" -o $(BINARY_NAME)-amd64 ./cmd/version-service
+dist: build
 
-build-arm:
-	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=arm GOARM=7 go build -ldflags "-w -s -X main.version=$(VERSION)" -o $(BINARY_NAME)-arm ./cmd/version-service
-
-dist:
-	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=arm GOARM=7 go build -ldflags "-w -s -X main.version=$(VERSION)" -o $(BINARY_NAME)-arm-dist ./cmd/version-service
+clean:
+	rm -rf $(BUILD_DIR)
 
 lint:
 	golangci-lint run
@@ -30,6 +31,3 @@ fmt:
 
 deps:
 	go mod download && go mod tidy
-
-clean:
-	rm -f $(BINARY_NAME)
