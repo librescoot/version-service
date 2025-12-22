@@ -101,7 +101,13 @@ func main() {
 	// Parse command line arguments
 	redisAddr := flag.String("redis", "192.168.7.1:6379", "Redis server address")
 	hashName := flag.String("hash", "os-release", "Redis hash name to store the values")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("version-service %s\n", version)
+		return
+	}
 
 	log.Printf("librescoot-version %s starting", version)
 
