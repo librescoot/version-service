@@ -1,4 +1,4 @@
-# Version Service
+# LibreScoot Version Service
 
 A simple Go service for LibreScoot that reads OS release information from `/etc/os-release` and stores it in Redis.
 
