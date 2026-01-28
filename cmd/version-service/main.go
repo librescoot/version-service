@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -32,39 +33,33 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 
 	// --- Read CFG0 (Unique ID Part L) ---
 	var cfg0ErrDetails []string
-	// Try NVMEM for CFG0
 	if nvmemPresent {
 		val, nvmemErr := readHexValueFromNvmem(4) // Offset 4 for CFG0
 		if nvmemErr == nil {
 			cfg0Hex = val
 		} else {
-			// NVMEM read failed, will try OTP. Store error detail.
 			cfg0ErrDetails = append(cfg0ErrDetails, fmt.Sprintf("NVMEM(offset 4): %s", nvmemErr.Error()))
 		}
 	} else {
 		cfg0ErrDetails = append(cfg0ErrDetails, "NVMEM: not found")
 	}
 
-	// If CFG0 not successfully read from NVMEM, try OTP
 	if cfg0Hex == "" {
 		data, otpErr := os.ReadFile(otpCfg0Path)
 		if otpErr == nil {
 			content := strings.TrimSpace(string(data))
 			cfg0Hex = strings.TrimPrefix(strings.ToLower(content), "0x")
-			// If OTP succeeded, previous NVMEM error details for CFG0 are irrelevant for this part's success
 			cfg0ErrDetails = []string{}
 		} else {
 			cfg0ErrDetails = append(cfg0ErrDetails, fmt.Sprintf("OTP(%s): %s", otpCfg0Path, otpErr.Error()))
 		}
 	}
-	// If CFG0 is still empty after trying all sources, record the failure.
 	if cfg0Hex == "" && len(cfg0ErrDetails) > 0 {
 		errMessages = append(errMessages, fmt.Sprintf("CFG0_read_failed: {%s}", strings.Join(cfg0ErrDetails, ", ")))
 	}
 
 	// --- Read CFG1 (Unique ID Part H) ---
 	var cfg1ErrDetails []string
-	// Try NVMEM for CFG1
 	if nvmemPresent {
 		val, nvmemErr := readHexValueFromNvmem(8) // Offset 8 for CFG1
 		if nvmemErr == nil {
@@ -76,7 +71,6 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 		cfg1ErrDetails = append(cfg1ErrDetails, "NVMEM: not found")
 	}
 
-	// If CFG1 not successfully read from NVMEM, try OTP
 	if cfg1Hex == "" {
 		data, otpErr := os.ReadFile(otpCfg1Path)
 		if otpErr == nil {
@@ -98,7 +92,6 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 }
 
 func main() {
-	// Parse command line arguments
 	redisAddr := flag.String("redis", "192.168.7.1:6379", "Redis server address")
 	hashName := flag.String("hash", "os-release", "Redis hash name to store the values")
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -109,36 +102,38 @@ func main() {
 		return
 	}
 
+	if os.Getenv("JOURNAL_STREAM") != "" {
+		log.SetFlags(0)
+	} else {
+		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	}
+
 	log.Printf("librescoot-version %s starting", version)
 
-	// Read /etc/os-release file
 	osReleaseData, err := readOSRelease()
 	if err != nil {
 		log.Fatalf("Failed to read OS release information: %v", err)
 	}
 
-	// Connect to Redis
 	rdb := redis.NewClient(&redis.Options{
-		Addr: *redisAddr,
+		Addr:         *redisAddr,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
 	})
 	defer rdb.Close()
 
 	ctx := context.Background()
 
-	// Check Redis connection
 	_, err = rdb.Ping(ctx).Result()
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis at %s: %v", *redisAddr, err)
 	}
 
-	// Store OS release data in Redis hash
+	fields := make(map[string]interface{}, len(osReleaseData)+2)
 	for key, value := range osReleaseData {
-		err = rdb.HSet(ctx, *hashName, key, value).Err()
-		if err != nil {
-			log.Fatalf("Failed to set Redis hash field %s: %v", key, err)
-		}
+		fields[key] = value
 	}
-	log.Printf("Successfully stored OS release information in Redis hash '%s'", *hashName)
 
 	// Read device identifier parts (CFG0, CFG1)
 	cfg0Hex, cfg1Hex, partsErr := getIdentifierHexStrings()
@@ -147,48 +142,36 @@ func main() {
 		log.Printf("Warning: Failed to read one or more device identifier parts: %v", partsErr)
 	}
 
-	// Process and store "legacy" serial number (CFG0 + CFG1 as uint64)
 	if cfg0Hex != "" && cfg1Hex != "" {
 		cfg0Val, errParse0 := parseHexFromString(cfg0Hex)
 		cfg1Val, errParse1 := parseHexFromString(cfg1Hex)
 
 		if errParse0 == nil && errParse1 == nil {
-			legacySN := cfg0Val + cfg1Val
-			err = rdb.HSet(ctx, *hashName, "serial_number", fmt.Sprintf("%d", legacySN)).Err()
-			if err != nil {
-				// Use Fatalf for critical Redis errors to prevent partial state
-				log.Fatalf("Failed to set legacy serial number in Redis: %v", err)
-			}
-			log.Printf("Successfully stored legacy serial number in Redis hash '%s'", *hashName)
+			fields["serial_number"] = fmt.Sprintf("%d", cfg0Val+cfg1Val)
+			fields["serial_number_real"] = cfg1Hex + cfg0Hex
 		} else {
-			var legacySnErrParts []string
+			var parseErrParts []string
 			if errParse0 != nil {
-				legacySnErrParts = append(legacySnErrParts, fmt.Sprintf("CFG0 ('%s') parse error: %v", cfg0Hex, errParse0))
+				parseErrParts = append(parseErrParts, fmt.Sprintf("CFG0 ('%s') parse error: %v", cfg0Hex, errParse0))
 			}
 			if errParse1 != nil {
-				legacySnErrParts = append(legacySnErrParts, fmt.Sprintf("CFG1 ('%s') parse error: %v", cfg1Hex, errParse1))
+				parseErrParts = append(parseErrParts, fmt.Sprintf("CFG1 ('%s') parse error: %v", cfg1Hex, errParse1))
 			}
-			log.Printf("Warning: Failed to calculate legacy serial number: %s", strings.Join(legacySnErrParts, "; "))
+			log.Printf("Warning: Failed to calculate serial numbers: %s", strings.Join(parseErrParts, "; "))
 		}
-	} else if partsErr == nil { // Only log this if partsErr didn't already cover the missing parts
-		log.Printf("Warning: Could not calculate legacy serial number because one or both identifier parts (CFG0, CFG1) are missing.")
+	} else if partsErr != nil {
+		log.Printf("Warning: Could not compute serial numbers, identifier parts missing")
 	}
 
-	// Process and store "real" serial number (CFG1_hex_string + CFG0_hex_string)
-	if cfg0Hex != "" && cfg1Hex != "" {
-		realSN := cfg1Hex + cfg0Hex // Concatenation of hex strings
-		err = rdb.HSet(ctx, *hashName, "serial_number_real", realSN).Err()
-		if err != nil {
-			log.Fatalf("Failed to set real serial number in Redis: %v", err)
-		}
-		log.Printf("Successfully stored real serial number in Redis hash '%s'", *hashName)
-	} else if partsErr == nil { // Only log this if partsErr didn't already cover the missing parts
-		log.Printf("Warning: Could not store real serial number because one or both identifier parts (CFG0, CFG1) are missing.")
+	// Write all fields in a single Redis call
+	if err := rdb.HSet(ctx, *hashName, fields).Err(); err != nil {
+		log.Fatalf("Failed to write to Redis hash '%s': %v", *hashName, err)
 	}
+
+	log.Printf("Stored %d fields in Redis hash '%s'", len(fields), *hashName)
 }
 
 // readHexValueFromNvmem reads a 4-byte hex value from NVMEM at a given offset.
-// It returns an 8-character hex string.
 func readHexValueFromNvmem(offset int) (string, error) {
 	nvmemDevicePath := "/sys/bus/nvmem/devices/imx-ocotp0/nvmem"
 
@@ -198,7 +181,7 @@ func readHexValueFromNvmem(offset int) (string, error) {
 	}
 	defer file.Close()
 
-	_, err = file.Seek(int64(offset), 0) // 0 means relative to the start of the file
+	_, err = file.Seek(int64(offset), 0)
 	if err != nil {
 		return "", fmt.Errorf("failed to seek in NVMEM device %s to offset %d: %v", nvmemDevicePath, offset, err)
 	}
@@ -212,14 +195,7 @@ func readHexValueFromNvmem(offset int) (string, error) {
 		return "", fmt.Errorf("unexpected number of bytes read from NVMEM device %s at offset %d: got %d, expected 4", nvmemDevicePath, offset, n)
 	}
 
-	// Format the 4 bytes read from NVMEM into an 8-character hexadecimal string.
-	// To emulate `hexdump -e '1/4 "%08x\n"'` on a little-endian system,
-	// the bytes B0, B1, B2, B3 should be formatted as B3B2B1B0.
 	hexStr := fmt.Sprintf("%02x%02x%02x%02x", buffer[3], buffer[2], buffer[1], buffer[0])
-
-	if len(hexStr) != 8 {
-		return "", fmt.Errorf("internal error: formatted hex string length is not 8: got '%s'", hexStr)
-	}
 	return hexStr, nil
 }
 
