@@ -1,6 +1,8 @@
-# LibreScoot Version Service
+# Librescoot Version Service
 
-A simple Go service for LibreScoot that reads OS release information from `/etc/os-release` and stores it in Redis.
+A simple Go service for Librescoot that reads OS release information from `/etc/os-release` and stores it in Redis.
+
+Part of the [Librescoot](https://librescoot.org/) open-source platform.
 
 ## Features
 
@@ -76,3 +78,14 @@ Two systemd unit files are provided:
 2. `version-service-dbc.service` - For the DBC (Dashboard Controller)
    - Runs after network is available
    - Stores data in the `version:dbc` hash
+
+## License
+
+This project is dual-licensed. The source code is available under the
+[GNU Affero General Public License v3.0][agpl-3.0].
+The maintainers reserve the right to grant separate licenses for commercial distribution; please contact the maintainers to discuss commercial licensing.
+
+[![AGPL v3][agpl-image]][agpl-3.0]
+
+[agpl-3.0]: https://www.gnu.org/licenses/agpl-3.0.en.html
+[agpl-image]: https://www.gnu.org/graphics/agplv3-88x31.png
