@@ -1,5 +1,5 @@
 [Unit]
-Description=LibreScoot DBC Version Service
+Description=Librescoot DBC Version Service
 After=network.target
 
 [Service]
