@@ -1,7 +1,7 @@
 [Unit]
 Description=Librescoot MDB Version Service
-Requires=redis.service
-After=redis.service network.target
+Requires=valkey.service
+After=valkey.service network.target
 
 [Service]
 Type=oneshot
