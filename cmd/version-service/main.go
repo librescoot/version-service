@@ -16,9 +16,8 @@ import (
 
 var version = "dev"
 
-// getIdentifierHexStrings attempts to read raw hex strings for CFG0 and CFG1.
-// It prioritizes NVMEM, then falls back to OTP sysfs files.
-// Returns the hex strings (which may be empty if a part is unreadable) and an error if any part could not be read from any source.
+// getIdentifierHexStrings reads CFG0/CFG1 from NVMEM, falling back to legacy OTP sysfs.
+// A part may be empty when neither source exposes it.
 func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 	nvmemDevicePath := "/sys/bus/nvmem/devices/imx-ocotp0/nvmem"
 	otpCfg0Path := "/sys/fsl_otp/HW_OCOTP_CFG0"
@@ -31,10 +30,9 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 
 	var errMessages []string
 
-	// --- Read CFG0 (Unique ID Part L) ---
 	var cfg0ErrDetails []string
 	if nvmemPresent {
-		val, nvmemErr := readHexValueFromNvmem(4) // Offset 4 for CFG0
+		val, nvmemErr := readHexValueFromNvmem(4) // CFG0 is at fuse offset 4.
 		if nvmemErr == nil {
 			cfg0Hex = val
 		} else {
@@ -58,10 +56,9 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 		errMessages = append(errMessages, fmt.Sprintf("CFG0_read_failed: {%s}", strings.Join(cfg0ErrDetails, ", ")))
 	}
 
-	// --- Read CFG1 (Unique ID Part H) ---
 	var cfg1ErrDetails []string
 	if nvmemPresent {
-		val, nvmemErr := readHexValueFromNvmem(8) // Offset 8 for CFG1
+		val, nvmemErr := readHexValueFromNvmem(8) // CFG1 is at fuse offset 8.
 		if nvmemErr == nil {
 			cfg1Hex = val
 		} else {
@@ -135,7 +132,6 @@ func main() {
 		fields[key] = value
 	}
 
-	// Read device identifier parts (CFG0, CFG1)
 	cfg0Hex, cfg1Hex, partsErr := getIdentifierHexStrings()
 
 	if partsErr != nil {
@@ -163,7 +159,6 @@ func main() {
 		log.Printf("Warning: Could not compute serial numbers, identifier parts missing")
 	}
 
-	// Write all fields in a single Redis call
 	if err := rdb.HSet(ctx, *hashName, fields).Err(); err != nil {
 		log.Fatalf("Failed to write to Redis hash '%s': %v", *hashName, err)
 	}
@@ -171,7 +166,7 @@ func main() {
 	log.Printf("Stored %d fields in Redis hash '%s'", len(fields), *hashName)
 }
 
-// readHexValueFromNvmem reads a 4-byte hex value from NVMEM at a given offset.
+// readHexValueFromNvmem reads one four-byte fuse word at offset.
 func readHexValueFromNvmem(offset int) (string, error) {
 	nvmemDevicePath := "/sys/bus/nvmem/devices/imx-ocotp0/nvmem"
 
@@ -199,7 +194,6 @@ func readHexValueFromNvmem(offset int) (string, error) {
 	return hexStr, nil
 }
 
-// parseHexFromString parses a hexadecimal string (expected without "0x" prefix) into a uint64.
 func parseHexFromString(hexStr string) (uint64, error) {
 	value, err := strconv.ParseUint(hexStr, 16, 64)
 	if err != nil {
@@ -208,7 +202,6 @@ func parseHexFromString(hexStr string) (uint64, error) {
 	return value, nil
 }
 
-// readOSRelease reads the /etc/os-release file and returns a map of lowercase keys to values
 func readOSRelease() (map[string]string, error) {
 	file, err := os.Open("/etc/os-release")
 	if err != nil {
