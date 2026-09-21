@@ -2,16 +2,16 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	ipc "github.com/librescoot/redis-ipc"
 )
 
 var version = "dev"
@@ -112,20 +112,23 @@ func main() {
 		log.Fatalf("Failed to read OS release information: %v", err)
 	}
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         *redisAddr,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-	})
-	defer rdb.Close()
-
-	ctx := context.Background()
-
-	_, err = rdb.Ping(ctx).Result()
+	host, portStr, err := net.SplitHostPort(*redisAddr)
+	if err != nil {
+		log.Fatalf("Invalid Redis address '%s': %v", *redisAddr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("Invalid Redis port in '%s': %v", *redisAddr, err)
+	}
+	client, err := ipc.New(
+		ipc.WithAddress(host),
+		ipc.WithPort(port),
+		ipc.WithDialTimeout(5*time.Second),
+	)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis at %s: %v", *redisAddr, err)
 	}
+	defer client.Close()
 
 	fields := make(map[string]interface{}, len(osReleaseData)+2)
 	for key, value := range osReleaseData {
@@ -159,7 +162,9 @@ func main() {
 		log.Printf("Warning: Could not compute serial numbers, identifier parts missing")
 	}
 
-	if err := rdb.HSet(ctx, *hashName, fields).Err(); err != nil {
+	// The synchronous option makes a failed write fail the oneshot instead of
+	// leaving it to a background goroutine.
+	if err := client.Hash(*hashName).SetMany(fields, ipc.Sync()); err != nil {
 		log.Fatalf("Failed to write to Redis hash '%s': %v", *hashName, err)
 	}
 
