@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,7 @@ func getIdentifierHexStrings() (cfg0Hex string, cfg1Hex string, err error) {
 func main() {
 	redisAddr := flag.String("redis", "192.168.7.1:6379", "Redis server address")
 	hashName := flag.String("hash", "os-release", "Redis hash name to store the values")
+	root := flag.String("root", "/", "Prefix for filesystem paths, for testing")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -135,6 +137,17 @@ func main() {
 		fields[key] = value
 	}
 
+	release, releaseErr := readKernelRelease(*root)
+	if releaseErr != nil {
+		log.Printf("Warning: Failed to read the running kernel release: %v", releaseErr)
+	}
+	for key, value := range checkKernel(*root, release) {
+		fields[key] = value
+	}
+	if skew, ok := fields["kernel_check"].(string); ok && skew == "skew" {
+		log.Printf("Warning: Kernel/module skew: %v", fields["kernel_check_detail"])
+	}
+
 	cfg0Hex, cfg1Hex, partsErr := getIdentifierHexStrings()
 
 	if partsErr != nil {
@@ -169,6 +182,66 @@ func main() {
 	}
 
 	log.Printf("Stored %d fields in Redis hash '%s'", len(fields), *hashName)
+}
+
+// readKernelRelease is the release the running kernel reports, which names the
+// module tree it loads from.
+func readKernelRelease(root string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(root, "proc/sys/kernel/osrelease"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// checkKernel reports whether the running kernel, the module tree that belongs to
+// it and the boot image in /boot still agree.
+//
+// The image ships /boot/zImage as a symlink to zImage-<release>, next to the
+// matching /lib/modules/<release>. A kernel installed outside the rootfs update
+// leaves one of the three behind, and every driver that is not built in then
+// fails to load without saying anything: the board runs, minus a device or a
+// whole link, and nothing in the logs names the cause.
+func checkKernel(root, release string) map[string]string {
+	fields := map[string]string{
+		"kernel_release":      release,
+		"kernel_check":        "ok",
+		"kernel_modules":      "ok",
+		"kernel_boot_image":   "ok",
+		"kernel_check_detail": "",
+	}
+	if release == "" {
+		fields["kernel_check"] = "unknown"
+		fields["kernel_modules"] = "unknown"
+		fields["kernel_boot_image"] = "unknown"
+		return fields
+	}
+
+	var details []string
+	if info, err := os.Stat(filepath.Join(root, "lib/modules", release)); err != nil || !info.IsDir() {
+		fields["kernel_modules"] = "missing"
+		details = append(details, fmt.Sprintf("no /lib/modules/%s: drivers that are not built in cannot load", release))
+	}
+
+	image := filepath.Join(root, "boot/zImage")
+	if target, err := os.Readlink(image); err == nil {
+		if target != "zImage-"+release {
+			fields["kernel_boot_image"] = "mismatch"
+			details = append(details, fmt.Sprintf("/boot/zImage points at %s, not zImage-%s", target, release))
+		}
+	} else if _, statErr := os.Stat(image); statErr != nil {
+		fields["kernel_boot_image"] = "missing"
+		details = append(details, "/boot/zImage is missing")
+	} else {
+		fields["kernel_boot_image"] = "not-symlink"
+		details = append(details, "/boot/zImage is a plain file, not the image's symlink")
+	}
+
+	if len(details) > 0 {
+		fields["kernel_check"] = "skew"
+		fields["kernel_check_detail"] = strings.Join(details, "; ")
+	}
+	return fields
 }
 
 // readHexValueFromNvmem reads one four-byte fuse word at offset.
