@@ -3,7 +3,7 @@ module github.com/librescoot/version-service
 go 1.22.1
 
 require (
-	github.com/librescoot/redis-ipc v0.15.4
+	github.com/librescoot/redis-ipc v0.15.5-0.20261111175103-0bca8184dc69
 	github.com/redis/go-redis/v9 v9.18.0 // indirect
 )
 
